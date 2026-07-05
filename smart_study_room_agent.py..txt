@@ -1,0 +1,928 @@
+"""
+=============================================================================
+SMART STUDY ROOM AGENT
+Lab 1: Building an Agentic AI - Perception-Action-Reasoning loop
+
+
+import random
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import List, Dict, Callable, Optional, Any
+from enum import Enum, auto
+from collections import deque
+
+
+# =============================================================================
+# MODULE 1: ENVIRONMENT (Simulated Smart Room)
+# =============================================================================
+
+class TimeOfDay(Enum):
+    MORNING = auto()
+    AFTERNOON = auto()
+    EVENING = auto()
+    NIGHT = auto()
+
+
+@dataclass
+class RoomState:
+    temperature: float = 22.0
+    light_level: float = 500.0
+    noise_level: float = 35.0
+    occupancy: bool = True
+    humidity: float = 45.0
+    air_quality: float = 95.0
+    time_of_day: TimeOfDay = TimeOfDay.MORNING
+    user_activity: str = "studying"
+    distraction_detected: bool = False
+    focus_score: float = 75.0
+
+    def to_dict(self):
+        return {
+            "temperature": self.temperature,
+            "light_level": self.light_level,
+            "noise_level": self.noise_level,
+            "occupancy": self.occupancy,
+            "humidity": self.humidity,
+            "air_quality": self.air_quality,
+            "time_of_day": self.time_of_day.name,
+            "user_activity": self.user_activity,
+            "distraction_detected": self.distraction_detected,
+            "focus_score": self.focus_score,
+        }
+
+
+class SmartRoomEnvironment:
+    def __init__(self, simulation_mode=True):
+        self.simulation_mode = simulation_mode
+        self.state = RoomState()
+        self.history = []
+        self._simulation_time = datetime.now()
+
+    def read_sensors(self):
+        if self.simulation_mode:
+            self._simulate_environment_changes()
+        self.history.append(self._copy_state())
+        if len(self.history) > 100:
+            self.history.pop(0)
+        return self._copy_state()
+
+    def _simulate_environment_changes(self):
+        self._simulation_time += timedelta(minutes=5)
+        hour = self._simulation_time.hour
+        if 6 <= hour < 12:
+            self.state.time_of_day = TimeOfDay.MORNING
+        elif 12 <= hour < 17:
+            self.state.time_of_day = TimeOfDay.AFTERNOON
+        elif 17 <= hour < 21:
+            self.state.time_of_day = TimeOfDay.EVENING
+        else:
+            self.state.time_of_day = TimeOfDay.NIGHT
+
+        self.state.temperature += random.uniform(-0.5, 0.5)
+        if self.state.time_of_day == TimeOfDay.AFTERNOON:
+            self.state.temperature += 0.3
+
+        base_light = {TimeOfDay.MORNING: 600, TimeOfDay.AFTERNOON: 800, TimeOfDay.EVENING: 300, TimeOfDay.NIGHT: 50}
+        self.state.light_level = base_light[self.state.time_of_day] + random.uniform(-50, 50)
+
+        self.state.noise_level = 35 + random.uniform(-5, 15)
+        if random.random() < 0.1:
+            self.state.noise_level += random.uniform(10, 25)
+            self.state.distraction_detected = True
+        else:
+            self.state.distraction_detected = False
+
+        if self.state.distraction_detected:
+            self.state.focus_score = max(0, self.state.focus_score - random.uniform(5, 15))
+        else:
+            self.state.focus_score = min(100, self.state.focus_score + random.uniform(0, 2))
+
+        self.state.air_quality = max(0, min(100, self.state.air_quality + random.uniform(-2, 1)))
+
+    def apply_action_effect(self, action_name, params):
+        if action_name == "ADJUST_TEMPERATURE":
+            self.state.temperature = params.get("target_temp", self.state.temperature)
+        elif action_name == "ADJUST_LIGHTING":
+            self.state.light_level = params.get("target_lux", self.state.light_level)
+        elif action_name == "PLAY_FOCUS_MUSIC":
+            self.state.noise_level = max(20, self.state.noise_level - 10)
+            self.state.focus_score = min(100, self.state.focus_score + 5)
+        elif action_name == "REDUCE_NOISE":
+            self.state.noise_level = max(20, self.state.noise_level - 15)
+        elif action_name == "SEND_BREAK_REMINDER":
+            self.state.focus_score = min(100, self.state.focus_score + 10)
+        elif action_name == "IMPROVE_AIR_QUALITY":
+            self.state.air_quality = min(100, self.state.air_quality + 10)
+        elif action_name == "ADJUST_HUMIDITY":
+            self.state.humidity = params.get("target_humidity", self.state.humidity)
+
+    def _copy_state(self):
+        return RoomState(
+            temperature=self.state.temperature, light_level=self.state.light_level,
+            noise_level=self.state.noise_level, occupancy=self.state.occupancy,
+            humidity=self.state.humidity, air_quality=self.state.air_quality,
+            time_of_day=self.state.time_of_day, user_activity=self.state.user_activity,
+            distraction_detected=self.state.distraction_detected, focus_score=self.state.focus_score
+        )
+
+    def inject_scenario(self, scenario):
+        if scenario == "TOO_HOT":
+            self.state.temperature = 30.0
+        elif scenario == "TOO_DARK":
+            self.state.light_level = 100.0
+        elif scenario == "NOISY":
+            self.state.noise_level = 70.0
+            self.state.distraction_detected = True
+        elif scenario == "POOR_AIR":
+            self.state.air_quality = 40.0
+        elif scenario == "LOW_FOCUS":
+            self.state.focus_score = 30.0
+        elif scenario == "OPTIMAL":
+            self.state.temperature = 22.0
+            self.state.light_level = 500.0
+            self.state.noise_level = 30.0
+            self.state.air_quality = 95.0
+            self.state.focus_score = 85.0
+
+
+# =============================================================================
+# MODULE 2: MUSIC LIBRARY (Custom Feature - PLAY_FOCUS_MUSIC)
+# =============================================================================
+
+class MusicGenre(Enum):
+    LOFI = "lofi"
+    CLASSICAL = "classical"
+    AMBIENT = "ambient"
+    NATURE = "nature"
+    BINAURAL = "binaural"
+    JAZZ = "jazz"
+    ADAPTIVE = "adaptive"
+
+
+@dataclass
+class Track:
+    title: str
+    artist: str
+    genre: MusicGenre
+    duration_minutes: float
+    bpm: int
+    energy_level: str
+    description: str
+
+
+class FocusMusicLibrary:
+    def __init__(self):
+        self.tracks = []
+        self.current_playlist = []
+        self.current_index = 0
+        self._init_library()
+
+    def _init_library(self):
+        self.tracks = [
+            Track("Midnight Study", "Chill Beats", MusicGenre.LOFI, 45, 75, "low", "Calm lo-fi beats for deep concentration"),
+            Track("Rainy Cafe", "LoFi Girl", MusicGenre.LOFI, 60, 70, "low", "Cozy cafe atmosphere with gentle rain"),
+            Track("Focus Flow", "Study Beats", MusicGenre.LOFI, 30, 80, "medium", "Steady rhythm to maintain workflow"),
+            Track("Gymnopedie No. 1", "Erik Satie", MusicGenre.CLASSICAL, 3, 60, "low", "Minimalist piano for calm focus"),
+            Track("Goldberg Variations", "J.S. Bach", MusicGenre.CLASSICAL, 15, 65, "low", "Baroque patterns enhance concentration"),
+            Track("Deep Space", "Ambient Works", MusicGenre.AMBIENT, 30, 0, "low", "Space-like drones for immersion"),
+            Track("Ocean Waves", "Nature Recordings", MusicGenre.NATURE, 60, 0, "low", "Rhythmic ocean waves for relaxation"),
+            Track("Alpha Waves 10Hz", "Brainwave Audio", MusicGenre.BINAURAL, 30, 0, "low", "10Hz binaural beats for alpha state"),
+            Track("Blue in Green", "Miles Davis", MusicGenre.JAZZ, 5, 65, "low", "Mellow jazz for relaxed focus"),
+        ]
+
+    def get_track(self, genre=MusicGenre.ADAPTIVE, energy_preference=None, room_state=None):
+        if genre == MusicGenre.ADAPTIVE and room_state:
+            genre = self._adaptive_select(room_state)
+        candidates = [t for t in self.tracks if t.genre == genre]
+        if energy_preference:
+            candidates = [t for t in candidates if t.energy_level == energy_preference]
+        if not candidates:
+            candidates = self.tracks
+        return random.choice(candidates)
+
+    def _adaptive_select(self, room_state):
+        focus = room_state.get("focus_score", 75)
+        noise = room_state.get("noise_level", 35)
+        time_of_day = room_state.get("time_of_day", "MORNING")
+        if focus < 30:
+            return MusicGenre.BINAURAL
+        elif noise > 50:
+            return MusicGenre.NATURE
+        elif time_of_day == "NIGHT":
+            return MusicGenre.AMBIENT
+        elif focus < 60:
+            return MusicGenre.LOFI
+        else:
+            return MusicGenre.CLASSICAL
+
+
+# =============================================================================
+# MODULE 3: KNOWLEDGE BASE (Rules and Facts)
+# =============================================================================
+
+class Priority(Enum):
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
+
+
+@dataclass
+class Rule:
+    name: str
+    description: str
+    conditions: List[Callable]
+    action: str
+    action_params: Dict = field(default_factory=dict)
+    priority: Priority = Priority.MEDIUM
+    cooldown_minutes: int = 5
+
+    def evaluate(self, facts):
+        return all(c(facts) for c in self.conditions)
+
+
+@dataclass
+class UserPreference:
+    preferred_temp: float = 22.0
+    preferred_light: float = 500.0
+    preferred_humidity: float = 45.0
+    focus_music_enabled: bool = True
+    break_interval_minutes: int = 45
+    music_genre_preference: str = "lofi"
+    notification_enabled: bool = True
+    auto_adjust: bool = True
+
+
+class KnowledgeBase:
+    TEMP_MIN, TEMP_MAX = 18.0, 26.0
+    TEMP_CRITICAL_HIGH, TEMP_CRITICAL_LOW = 30.0, 15.0
+    LIGHT_MIN, LIGHT_MAX, LIGHT_CRITICAL_LOW = 300.0, 800.0, 150.0
+    NOISE_MAX, NOISE_CRITICAL = 45.0, 65.0
+    HUMIDITY_MIN, HUMIDITY_MAX = 30.0, 60.0
+    AIR_QUALITY_MIN, AIR_QUALITY_CRITICAL = 70.0, 50.0
+    FOCUS_LOW_THRESHOLD, FOCUS_CRITICAL = 40.0, 20.0
+
+    def __init__(self):
+        self.facts = {}
+        self.rules = []
+        self.user_prefs = UserPreference()
+        self.rule_last_fired = {}
+        self._init_rules()
+
+    def _init_rules(self):
+        self.rules = [
+            Rule("CRITICAL_HIGH_TEMP", "Temperature dangerously high",
+                 [lambda f: f.get("temperature", 0) > self.TEMP_CRITICAL_HIGH],
+                 "ADJUST_TEMPERATURE", {"target_temp": 22.0, "urgency": "critical"}, Priority.CRITICAL, 2),
+            Rule("CRITICAL_LOW_LIGHT", "Lighting critically low",
+                 [lambda f: f.get("light_level", 0) < self.LIGHT_CRITICAL_LOW],
+                 "ADJUST_LIGHTING", {"target_lux": 500.0, "urgency": "critical"}, Priority.CRITICAL, 2),
+            Rule("CRITICAL_NOISE", "Excessive noise detected",
+                 [lambda f: f.get("noise_level", 0) > self.NOISE_CRITICAL, lambda f: f.get("distraction_detected", False)],
+                 "REDUCE_NOISE", {"method": "active_cancellation", "urgency": "critical"}, Priority.CRITICAL, 3),
+            Rule("HIGH_TEMP", "Temperature above comfortable range",
+                 [lambda f: f.get("temperature", 0) > self.TEMP_MAX, lambda f: f.get("temperature", 0) <= self.TEMP_CRITICAL_HIGH],
+                 "ADJUST_TEMPERATURE", {"target_temp": 22.0, "urgency": "high"}, Priority.HIGH),
+            Rule("LOW_TEMP", "Temperature below comfortable range",
+                 [lambda f: f.get("temperature", 0) < self.TEMP_MIN],
+                 "ADJUST_TEMPERATURE", {"target_temp": 22.0, "urgency": "high"}, Priority.HIGH),
+            Rule("LOW_LIGHT", "Insufficient lighting for study",
+                 [lambda f: f.get("light_level", 0) < self.LIGHT_MIN, lambda f: f.get("light_level", 0) >= self.LIGHT_CRITICAL_LOW],
+                 "ADJUST_LIGHTING", {"target_lux": 500.0, "urgency": "high"}, Priority.HIGH),
+            Rule("HIGH_NOISE", "Moderate noise disturbance",
+                 [lambda f: f.get("noise_level", 0) > self.NOISE_MAX, lambda f: f.get("noise_level", 0) <= self.NOISE_CRITICAL],
+                 "PLAY_FOCUS_MUSIC", {"genre": "adaptive", "volume": 0.3, "urgency": "high"}, Priority.HIGH),
+            Rule("POOR_AIR_QUALITY", "Air quality below optimal",
+                 [lambda f: f.get("air_quality", 100) < self.AIR_QUALITY_MIN, lambda f: f.get("air_quality", 100) >= self.AIR_QUALITY_CRITICAL],
+                 "IMPROVE_AIR_QUALITY", {"method": "ventilation", "urgency": "high"}, Priority.HIGH),
+            Rule("LOW_FOCUS_MUSIC", "Focus score declining - play focus music",
+                 [lambda f: f.get("focus_score", 100) < self.FOCUS_LOW_THRESHOLD, lambda f: f.get("focus_score", 100) >= self.FOCUS_CRITICAL,
+                  lambda f: f.get("noise_level", 0) <= self.NOISE_MAX],
+                 "PLAY_FOCUS_MUSIC", {"genre": "lofi", "volume": 0.25, "urgency": "medium"}, Priority.MEDIUM),
+            Rule("BREAK_REMINDER", "User has been studying long - suggest break",
+                 [lambda f: f.get("session_duration_minutes", 0) > self.user_prefs.break_interval_minutes, lambda f: f.get("focus_score", 100) < 60],
+                 "SEND_BREAK_REMINDER", {"type": "pomodoro", "urgency": "medium"}, Priority.MEDIUM),
+            Rule("HUMIDITY_ADJUST", "Humidity outside comfort range",
+                 [lambda f: f.get("humidity", 45) < self.HUMIDITY_MIN or f.get("humidity", 45) > self.HUMIDITY_MAX],
+                 "ADJUST_HUMIDITY", {"target_humidity": 45.0, "urgency": "medium"}, Priority.MEDIUM),
+            Rule("EVENING_LIGHTING", "Evening time - warm lighting adjustment",
+                 [lambda f: f.get("time_of_day") == "EVENING", lambda f: f.get("light_level", 0) > 600],
+                 "ADJUST_LIGHTING", {"target_lux": 400.0, "color_temp": "warm", "urgency": "low"}, Priority.LOW),
+            Rule("OPTIMAL_ENV_ACK", "Environment is optimal - positive feedback",
+                 [lambda f: self.TEMP_MIN <= f.get("temperature", 22) <= self.TEMP_MAX,
+                  lambda f: self.LIGHT_MIN <= f.get("light_level", 500) <= self.LIGHT_MAX,
+                  lambda f: f.get("noise_level", 35) <= self.NOISE_MAX,
+                  lambda f: f.get("focus_score", 75) > 70],
+                 "SEND_STATUS_UPDATE", {"message": "Environment optimal. Keep focusing!", "urgency": "low"}, Priority.LOW, 15),
+        ]
+
+    def update_facts(self, room_state, session_duration=0):
+        self.facts = {**room_state, "session_duration_minutes": session_duration, "user_prefs": self.user_prefs}
+
+    def get_applicable_rules(self):
+        applicable = []
+        current_time = time.time()
+        for rule in self.rules:
+            if rule.evaluate(self.facts):
+                last_fired = self.rule_last_fired.get(rule.name, 0)
+                if current_time - last_fired >= rule.cooldown_minutes * 60:
+                    applicable.append(rule)
+        applicable.sort(key=lambda r: r.priority.value)
+        return applicable
+
+    def record_rule_fired(self, rule_name):
+        self.rule_last_fired[rule_name] = time.time()
+
+
+# =============================================================================
+# MODULE 4: PERCEPTION (Sensor Processing)
+# =============================================================================
+
+@dataclass
+class Perception:
+    raw_state: Dict
+    temperature_status: str
+    lighting_status: str
+    noise_status: str
+    air_quality_status: str
+    focus_trend: str
+    overall_comfort: float
+    alerts: List[str]
+    recommendations: List[str]
+
+
+class PerceptionModule:
+    def __init__(self, window_size=10):
+        self.window_size = window_size
+        self.temperature_history = deque(maxlen=window_size)
+        self.focus_history = deque(maxlen=window_size)
+        self.noise_history = deque(maxlen=window_size)
+
+    def process(self, room_state, kb):
+        self.temperature_history.append(room_state.get("temperature", 22))
+        self.focus_history.append(room_state.get("focus_score", 75))
+        self.noise_history.append(room_state.get("noise_level", 35))
+
+        temp = room_state.get("temperature", 22)
+        light = room_state.get("light_level", 500)
+        noise = room_state.get("noise_level", 35)
+        air = room_state.get("air_quality", 95)
+        focus = room_state.get("focus_score", 75)
+
+        if temp > kb.TEMP_CRITICAL_HIGH or temp < kb.TEMP_CRITICAL_LOW:
+            temp_status = "critical"
+        elif temp > kb.TEMP_MAX:
+            temp_status = "high"
+        elif temp < kb.TEMP_MIN:
+            temp_status = "low"
+        else:
+            temp_status = "optimal"
+
+        if light < kb.LIGHT_CRITICAL_LOW:
+            light_status = "critical"
+        elif light < kb.LIGHT_MIN:
+            light_status = "low"
+        elif light > kb.LIGHT_MAX:
+            light_status = "high"
+        else:
+            light_status = "optimal"
+
+        if noise > kb.NOISE_CRITICAL:
+            noise_status = "critical"
+        elif noise > kb.NOISE_MAX:
+            noise_status = "high"
+        else:
+            noise_status = "optimal"
+
+        if air < kb.AIR_QUALITY_CRITICAL:
+            air_status = "critical"
+        elif air < kb.AIR_QUALITY_MIN:
+            air_status = "poor"
+        else:
+            air_status = "optimal"
+
+        focus_trend = self._calc_focus_trend()
+        comfort = self._calc_comfort(temp, light, noise, air, focus, kb)
+        alerts, recommendations = self._gen_alerts(temp_status, light_status, noise_status, air_status, focus, focus_trend, kb, temp, light, noise, air)
+
+        return Perception(room_state, temp_status, light_status, noise_status, air_status, focus_trend, comfort, alerts, recommendations)
+
+    def _calc_focus_trend(self):
+        if len(self.focus_history) < 3:
+            return "stable"
+        recent = list(self.focus_history)[-3:]
+        if recent[-1] > recent[0] + 5:
+            return "improving"
+        elif recent[-1] < recent[0] - 5:
+            return "declining"
+        return "stable"
+
+    def _calc_comfort(self, temp, light, noise, air, focus, kb):
+        temp_score = max(0, min(100, 100 - abs(temp - 22) * 5)) * 0.25
+        light_score = max(0, min(100, 100 - abs(light - 500) / 5)) * 0.20
+        noise_score = max(0, min(100, 100 - max(0, noise - 35) * 2)) * 0.20
+        air_score = air * 0.15
+        focus_score = focus * 0.20
+        return temp_score + light_score + noise_score + air_score + focus_score
+
+    def _gen_alerts(self, temp_s, light_s, noise_s, air_s, focus, trend, kb, temp, light, noise, air):
+        alerts, recommendations = [], []
+        if temp_s == "critical":
+            alerts.append("CRITICAL: Temperature at dangerous level!")
+            recommendations.append("Adjust thermostat immediately")
+        elif temp_s in ("high", "low"):
+            alerts.append(f"Temperature {temp_s}")
+            recommendations.append("Adjust room temperature")
+        if light_s == "critical":
+            alerts.append("CRITICAL: Insufficient lighting!")
+            recommendations.append("Increase lighting immediately")
+        elif light_s == "low":
+            alerts.append("Lighting below optimal level")
+            recommendations.append("Brighten study area")
+        if noise_s == "critical":
+            alerts.append("CRITICAL: Excessive noise detected!")
+            recommendations.append("Activate noise reduction or play focus music")
+        elif noise_s == "high":
+            alerts.append("Noise levels elevated")
+            recommendations.append("Consider playing focus music")
+        if air_s == "critical":
+            alerts.append("CRITICAL: Poor air quality!")
+            recommendations.append("Open windows or activate air purifier")
+        elif air_s == "poor":
+            alerts.append("Air quality declining")
+            recommendations.append("Improve ventilation")
+        if focus < kb.FOCUS_LOW_THRESHOLD:
+            alerts.append(f"Focus score low ({focus:.1f})")
+            recommendations.append("Take a break or play focus music" if trend == "declining" else "Maintain current environment")
+        return alerts, recommendations
+
+
+# =============================================================================
+# MODULE 5: ACTIONS (Action Execution System)
+# =============================================================================
+
+class ActionStatus(Enum):
+    SUCCESS = auto()
+    FAILED = auto()
+    PARTIAL = auto()
+    PENDING = auto()
+
+
+@dataclass
+class ActionResult:
+    action_name: str
+    status: ActionStatus
+    message: str
+    affected_state: Dict[str, Any]
+    timestamp: float
+
+
+class Action(ABC):
+    def __init__(self, name, description):
+        self.name = name
+        self.description = description
+
+    @abstractmethod
+    def execute(self, params, environment, kb):
+        pass
+
+    @abstractmethod
+    def validate_params(self, params):
+        pass
+
+
+class AdjustTemperature(Action):
+    def __init__(self):
+        super().__init__("ADJUST_TEMPERATURE", "Adjust room temperature")
+    def validate_params(self, params):
+        return "target_temp" in params and 15 <= params["target_temp"] <= 35
+    def execute(self, params, environment, kb):
+        target = params["target_temp"]
+        current = environment.state.temperature
+        new_temp = current + (target - current) * 0.7
+        environment.apply_action_effect(self.name, {"target_temp": new_temp})
+        return ActionResult(self.name, ActionStatus.SUCCESS, f"Temperature adjusted from {current:.1f}C to {new_temp:.1f}C", {"temperature": new_temp}, time.time())
+
+
+class AdjustLighting(Action):
+    def __init__(self):
+        super().__init__("ADJUST_LIGHTING", "Adjust room lighting")
+    def validate_params(self, params):
+        return "target_lux" in params and 0 <= params["target_lux"] <= 2000
+    def execute(self, params, environment, kb):
+        target = params["target_lux"]
+        color_temp = params.get("color_temp", "neutral")
+        current = environment.state.light_level
+        new_light = current + (target - current) * 0.8
+        environment.apply_action_effect(self.name, {"target_lux": new_light})
+        return ActionResult(self.name, ActionStatus.SUCCESS, f"Lighting adjusted from {current:.0f} to {new_light:.0f} lux", {"light_level": new_light, "color_temp": color_temp}, time.time())
+
+
+class PlayFocusMusic(Action):
+    def __init__(self):
+        super().__init__("PLAY_FOCUS_MUSIC", "Play focus-enhancing music")
+        self.music_lib = FocusMusicLibrary()
+        self.is_playing = False
+        self.current_track = None
+    def validate_params(self, params):
+        return "volume" in params and 0 <= params["volume"] <= 1
+    def execute(self, params, environment, kb):
+        genre_str = params.get("genre", "adaptive")
+        volume = params["volume"]
+        try:
+            genre = MusicGenre(genre_str.lower())
+        except ValueError:
+            genre = MusicGenre.ADAPTIVE
+        room_state = environment.state.to_dict()
+        track = self.music_lib.get_track(genre=genre, room_state=room_state)
+        self.current_track = track
+        self.is_playing = True
+        environment.apply_action_effect(self.name, {})
+        volume_bar = "█" * int(volume * 10) + "░" * (10 - int(volume * 10))
+        message = f"Now Playing: {track.title} by {track.artist}\n   Genre: {track.genre.value} | Volume: [{volume_bar}] {volume*100:.0f}%\n   {track.description}"
+        return ActionResult(self.name, ActionStatus.SUCCESS, message, {"music_playing": True, "current_track": track.title, "volume": volume}, time.time())
+
+
+class ReduceNoise(Action):
+    def __init__(self):
+        super().__init__("REDUCE_NOISE", "Reduce ambient noise")
+    def validate_params(self, params):
+        return True
+    def execute(self, params, environment, kb):
+        current = environment.state.noise_level
+        environment.apply_action_effect(self.name, {})
+        new_noise = environment.state.noise_level
+        return ActionResult(self.name, ActionStatus.SUCCESS, f"Noise reduced from {current:.1f} to {new_noise:.1f} dB", {"noise_level": new_noise}, time.time())
+
+
+class SendBreakReminder(Action):
+    def __init__(self):
+        super().__init__("SEND_BREAK_REMINDER", "Send break reminder to user")
+    def validate_params(self, params):
+        return True
+    def execute(self, params, environment, kb):
+        reminder_type = params.get("type", "standard")
+        messages = {"pomodoro": "Pomodoro break time! Take 5 minutes to stretch and rest your eyes.", "standard": "Time for a break! Step away from your desk for a few minutes."}
+        environment.apply_action_effect(self.name, {})
+        return ActionResult(self.name, ActionStatus.SUCCESS, messages.get(reminder_type, messages["standard"]), {"break_reminder_sent": True}, time.time())
+
+
+class ImproveAirQuality(Action):
+    def __init__(self):
+        super().__init__("IMPROVE_AIR_QUALITY", "Improve air quality")
+    def validate_params(self, params):
+        return True
+    def execute(self, params, environment, kb):
+        current = environment.state.air_quality
+        environment.apply_action_effect(self.name, {})
+        new_quality = environment.state.air_quality
+        return ActionResult(self.name, ActionStatus.SUCCESS, f"Air quality improved from {current:.1f} to {new_quality:.1f}", {"air_quality": new_quality}, time.time())
+
+
+class AdjustHumidity(Action):
+    def __init__(self):
+        super().__init__("ADJUST_HUMIDITY", "Adjust room humidity")
+    def validate_params(self, params):
+        return "target_humidity" in params and 20 <= params["target_humidity"] <= 80
+    def execute(self, params, environment, kb):
+        target = params["target_humidity"]
+        current = environment.state.humidity
+        environment.apply_action_effect(self.name, {"target_humidity": target})
+        return ActionResult(self.name, ActionStatus.SUCCESS, f"Humidity adjusted from {current:.1f}% to target {target}%", {"humidity": target}, time.time())
+
+
+class SendStatusUpdate(Action):
+    def __init__(self):
+        super().__init__("SEND_STATUS_UPDATE", "Send environment status update")
+    def validate_params(self, params):
+        return "message" in params
+    def execute(self, params, environment, kb):
+        return ActionResult(self.name, ActionStatus.SUCCESS, params.get("message", "Status update"), {}, time.time())
+
+
+class ActionExecutor:
+    def __init__(self):
+        self.actions = {
+            "ADJUST_TEMPERATURE": AdjustTemperature(),
+            "ADJUST_LIGHTING": AdjustLighting(),
+            "PLAY_FOCUS_MUSIC": PlayFocusMusic(),
+            "REDUCE_NOISE": ReduceNoise(),
+            "SEND_BREAK_REMINDER": SendBreakReminder(),
+            "IMPROVE_AIR_QUALITY": ImproveAirQuality(),
+            "ADJUST_HUMIDITY": AdjustHumidity(),
+            "SEND_STATUS_UPDATE": SendStatusUpdate(),
+        }
+        self.execution_history = []
+
+    def execute_action(self, action_name, params, environment, kb):
+        if action_name not in self.actions:
+            return ActionResult(action_name, ActionStatus.FAILED, f"Unknown action: {action_name}", {}, time.time())
+        action = self.actions[action_name]
+        if not action.validate_params(params):
+            return ActionResult(action_name, ActionStatus.FAILED, f"Invalid parameters for {action_name}", {}, time.time())
+        try:
+            result = action.execute(params, environment, kb)
+            self.execution_history.append(result)
+            return result
+        except Exception as e:
+            return ActionResult(action_name, ActionStatus.FAILED, f"Execution error: {str(e)}", {}, time.time())
+
+    def get_history(self):
+        return self.execution_history
+
+    def get_available_actions(self):
+        return list(self.actions.keys())
+
+
+# =============================================================================
+# MODULE 6: REASONING (Decision Engine)
+# =============================================================================
+
+@dataclass
+class Decision:
+    rule_triggered: str
+    action: str
+    action_params: Dict
+    priority: Priority
+    reasoning: str
+    confidence: float
+
+
+class ReasoningEngine:
+    def __init__(self, kb, executor):
+        self.kb = kb
+        self.executor = executor
+        self.decision_history = deque(maxlen=50)
+        self.current_goals = []
+
+    def reason(self, perception):
+        self.kb.update_facts(perception.raw_state)
+        applicable_rules = self.kb.get_applicable_rules()
+        if not applicable_rules:
+            return []
+        selected_rules = self._resolve_conflicts(applicable_rules)
+        decisions = []
+        for rule in selected_rules:
+            decisions.append(Decision(rule.name, rule.action, rule.action_params, rule.priority, self._gen_reasoning(rule, perception), self._calc_confidence(rule, perception)))
+        return decisions
+
+    def _resolve_conflicts(self, rules):
+        if not rules:
+            return []
+        rules_by_priority = {}
+        for rule in rules:
+            if rule.priority not in rules_by_priority:
+                rules_by_priority[rule.priority] = []
+            rules_by_priority[rule.priority].append(rule)
+        sorted_priorities = sorted(rules_by_priority.keys(), key=lambda p: p.value)
+        selected = []
+        max_per = {Priority.CRITICAL: 5, Priority.HIGH: 3, Priority.MEDIUM: 2, Priority.LOW: 1}
+        for priority in sorted_priorities:
+            priority_rules = rules_by_priority[priority]
+            priority_rules.sort(key=lambda r: len(r.conditions), reverse=True)
+            selected.extend(priority_rules[:max_per.get(priority, 1)])
+            if priority == Priority.CRITICAL and len(selected) >= 2:
+                break
+        return selected
+
+    def _gen_reasoning(self, rule, perception):
+        facts = perception.raw_state
+        reasonings = {
+            "CRITICAL_HIGH_TEMP": f"Temperature {facts.get('temperature')}C exceeds critical threshold",
+            "CRITICAL_LOW_LIGHT": f"Light level {facts.get('light_level')} lux below critical threshold",
+            "CRITICAL_NOISE": f"Noise level {facts.get('noise_level')} dB exceeds critical threshold",
+            "HIGH_TEMP": f"Temperature {facts.get('temperature')}C above optimal range",
+            "LOW_TEMP": f"Temperature {facts.get('temperature')}C below optimal range",
+            "LOW_LIGHT": f"Light level {facts.get('light_level')} lux below optimal",
+            "HIGH_NOISE": f"Noise level {facts.get('noise_level')} dB above comfort threshold",
+            "PLAY_FOCUS_MUSIC": f"Focus score {facts.get('focus_score'):.1f} is low; music can improve concentration",
+            "POOR_AIR_QUALITY": f"Air quality {facts.get('air_quality'):.1f} below optimal",
+            "BREAK_REMINDER": "Study session duration exceeds break interval",
+            "HUMIDITY_ADJUST": f"Humidity {facts.get('humidity'):.1f}% outside comfort range",
+            "EVENING_LIGHTING": "Evening time detected - adjusting for circadian rhythm",
+            "OPTIMAL_ENV_ACK": "All environmental parameters within optimal ranges",
+        }
+        return reasonings.get(rule.name, f"Rule {rule.name} conditions met")
+
+    def _calc_confidence(self, rule, perception):
+        confidence = 0.8
+        boost = {Priority.CRITICAL: 0.15, Priority.HIGH: 0.10, Priority.MEDIUM: 0.05, Priority.LOW: 0.0}
+        confidence += boost.get(rule.priority, 0)
+        if rule.name == "LOW_FOCUS_MUSIC" and perception.focus_trend == "declining":
+            confidence += 0.05
+        return min(1.0, confidence)
+
+    def execute_decisions(self, decisions, environment):
+        results = []
+        for decision in decisions:
+            result = self.executor.execute_action(decision.action, decision.action_params, environment, self.kb)
+            results.append(result)
+            self.kb.record_rule_fired(decision.rule_triggered)
+            self.decision_history.append(decision)
+        return results
+
+    def get_decision_history(self):
+        return list(self.decision_history)
+
+
+# =============================================================================
+# MODULE 7: MAIN AGENT (PAR Loop Orchestrator)
+# =============================================================================
+
+@dataclass
+class AgentCycle:
+    cycle_number: int
+    timestamp: datetime
+    perception: Perception
+    decisions: List[Decision]
+    actions_executed: List[ActionResult]
+    cycle_duration_ms: float
+
+
+class SmartStudyRoomAgent:
+    def __init__(self, cycle_interval_seconds=5.0):
+        self.cycle_interval = cycle_interval_seconds
+        self.environment = SmartRoomEnvironment(simulation_mode=True)
+        self.perception_module = PerceptionModule(window_size=10)
+        self.knowledge_base = KnowledgeBase()
+        self.action_executor = ActionExecutor()
+        self.reasoning_engine = ReasoningEngine(self.knowledge_base, self.action_executor)
+        self.cycle_count = 0
+        self.is_running = False
+        self.cycle_history = []
+        self.session_start_time = datetime.now()
+
+    def run_single_cycle(self):
+        cycle_start = time.time()
+        self.cycle_count += 1
+        raw_state = self.environment.read_sensors()
+        perception = self.perception_module.process(raw_state.to_dict(), self.knowledge_base)
+        decisions = self.reasoning_engine.reason(perception)
+        results = self.reasoning_engine.execute_decisions(decisions, self.environment)
+        cycle_duration = (time.time() - cycle_start) * 1000
+        cycle_record = AgentCycle(self.cycle_count, datetime.now(), perception, decisions, results, cycle_duration)
+        self.cycle_history.append(cycle_record)
+        if len(self.cycle_history) > 1000:
+            self.cycle_history.pop(0)
+        return cycle_record
+
+    def run_continuous(self, max_cycles=None):
+        self.is_running = True
+        self.session_start_time = datetime.now()
+        print("=" * 60)
+        print("SMART STUDY ROOM AGENT - PAR LOOP")
+        print(f"Session: {self.session_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Cycle interval: {self.cycle_interval}s")
+        print(f"Actions: {', '.join(self.action_executor.get_available_actions())}")
+        print("=" * 60)
+        try:
+            while self.is_running:
+                if max_cycles and self.cycle_count >= max_cycles:
+                    break
+                cycle = self.run_single_cycle()
+                self._display_cycle(cycle)
+                time.sleep(self.cycle_interval)
+        except KeyboardInterrupt:
+            print("\nAgent stopped by user")
+        finally:
+            self.is_running = False
+            self._print_summary()
+
+    def run_scenario(self, scenario_name, cycles=5):
+        print(f"\n{'='*40}")
+        print(f"SCENARIO: {scenario_name}")
+        print(f"{'='*40}")
+        self.environment.inject_scenario(scenario_name)
+        for i in range(cycles):
+            cycle = self.run_single_cycle()
+            self._display_cycle(cycle)
+            time.sleep(1)
+
+    def stop(self):
+        self.is_running = False
+
+    def get_status(self):
+        return {
+            "running": self.is_running,
+            "cycle_count": self.cycle_count,
+            "session_duration": str(datetime.now() - self.session_start_time),
+            "current_environment": self.environment.state.to_dict(),
+        }
+
+    def _display_cycle(self, cycle):
+        print(f"\n--- Cycle #{cycle.cycle_number} | {cycle.timestamp.strftime('%H:%M:%S')} | {cycle.cycle_duration_ms:.1f}ms ---")
+        state = cycle.perception.raw_state
+        print(f"Temp: {state['temperature']:.1f}C | Light: {state['light_level']:.0f}lux | Noise: {state['noise_level']:.1f}dB | Focus: {state['focus_score']:.1f}")
+        for alert in cycle.perception.alerts:
+            print(f"  ! {alert}")
+        if cycle.decisions:
+            for d, r in zip(cycle.decisions, cycle.actions_executed):
+                print(f"  >> [{d.priority.name}] {d.action}: {r.message[:60]}...")
+        else:
+            print("  (No actions needed - environment optimal)")
+
+    def _print_summary(self):
+        print("\n" + "=" * 60)
+        print("SESSION SUMMARY")
+        print("=" * 60)
+        duration = datetime.now() - self.session_start_time
+        print(f"Total cycles: {self.cycle_count}")
+        print(f"Duration: {duration}")
+        action_counts = {}
+        for cycle in self.cycle_history:
+            for result in cycle.actions_executed:
+                action_counts[result.action_name] = action_counts.get(result.action_name, 0) + 1
+        if action_counts:
+            print("Actions executed:")
+            for action, count in sorted(action_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {action}: {count}")
+        print("=" * 60)
+
+
+# =============================================================================
+# DEMO / MAIN ENTRY POINT
+# =============================================================================
+
+def demo():
+    print("""
+    ============================================
+         SMART STUDY ROOM AGENT
+      Perception-Action-Reasoning Loop
+    ============================================
+    """)
+    print("Commands:")
+    print("  1 = Continuous monitoring")
+    print("  2 = TOO HOT scenario")
+    print("  3 = TOO DARK scenario")
+    print("  4 = NOISY scenario")
+    print("  5 = POOR AIR scenario")
+    print("  6 = LOW FOCUS scenario")
+    print("  7 = OPTIMAL scenario")
+    print("  8 = Agent status")
+    print("  0 = Exit")
+    print("  h = Show this menu")
+
+    agent = SmartStudyRoomAgent(cycle_interval_seconds=3)
+
+    while True:
+        try:
+            choice = input("\nEnter choice: ").strip().lower()
+
+            if choice == '1':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=3)
+                agent.environment.inject_scenario("OPTIMAL")
+                try:
+                    agent.run_continuous(max_cycles=15)
+                except KeyboardInterrupt:
+                    agent.stop()
+
+            elif choice == '2':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("TOO_HOT", cycles=5)
+
+            elif choice == '3':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("TOO_DARK", cycles=5)
+
+            elif choice == '4':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("NOISY", cycles=5)
+
+            elif choice == '5':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("POOR_AIR", cycles=5)
+
+            elif choice == '6':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("LOW_FOCUS", cycles=5)
+
+            elif choice == '7':
+                agent = SmartStudyRoomAgent(cycle_interval_seconds=2)
+                agent.run_scenario("OPTIMAL", cycles=5)
+
+            elif choice == '8':
+                status = agent.get_status()
+                for key, value in status.items():
+                    print(f"  {key}: {value}")
+
+            elif choice == '0':
+                print("Goodbye!")
+                break
+
+            elif choice == 'h':
+                print("\nCommands: 1=Continuous, 2=TOO_HOT, 3=TOO_DARK, 4=NOISY, 5=POOR_AIR, 6=LOW_FOCUS, 7=OPTIMAL, 8=Status, 0=Exit, h=Help")
+
+            else:
+                print("Invalid choice. Press 'h' for help.")
+
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    demo()
